@@ -1,0 +1,158 @@
+#Função para a realização da regressão por combinação convexa
+#Autor: Felipe Pinto Marinho
+#Data: 15/03/2022
+
+#Carregando alguma bibliotecas importantes
+library(plm)
+library(pracma)
+library(MASS)
+library(minpack.lm)
+
+######################################################
+#Obtenção da Matriz
+X_treino = Boston_treino_normalizado
+V = t(X_treino)
+LI = V
+
+for (j in 1:ncol(V)) {
+  if(is.numeric(detect.lindep(LI, suppressPrint = T)) == TRUE){
+    LI = LI[, -detect.lindep(LI, suppressPrint = T)]
+  }
+  
+  if(is.numeric(detect.lindep(LI, suppressPrint = T)) == FALSE){
+    break()
+  }
+  
+}
+
+#Obtenção da base ortonormal
+Q = gramSchmidt(t(LI))
+Q = Q$Q
+
+#Obtenção das projeções das observações de treinamento sobre o subespaço gerado
+#pela base ortonormal
+P = matrix(0, nrow = nrow(X_treino), ncol = ncol(X_treino))
+
+for (i in 1:nrow(X_treino)) {
+  auxiliar = matrix(0, nrow = nrow(X_treino), ncol = ncol(X_treino))
+  for (j in 1:nrow(Q)) {
+    auxiliar[j, ] = dot(X_treino[i, ], Q[j, ]) * Q[j, ]
+  }
+  
+  P[i, ] = apply(auxiliar, 2, sum)
+}
+
+#Obtenção das coordenadas das projeções das observações de treino
+C = matrix(0, nrow = nrow(X_treino), ncol = nrow(Q))
+for (i in 1:nrow(C)) {
+  for (j in 1:ncol(C)) {
+    C[i, j] = dot(as.matrix(P[i,]), Q[j,])
+  }
+}
+
+#função k maiores
+k_maiores = function(vetor, Y_treino, l){
+  c = vetor
+  maiores = rep(0, l)
+  for (i in 1:l) {
+    maiores[l] = Y_treino[which.max(c)]
+    c = c[-which.max(c)]
+  }
+  
+  return(maiores)
+}
+
+#Generalização para o caso multilinear para k arbitrário
+##########################################################
+#Função para a regressão por combinação convexa
+RCC_Multilinear = function(X_treino, x_teste, Y_treino, Y_teste, k){
+  
+  #Determinação da matriz Y*
+  Yk = matrix(0, nrow = nrow(X_treino), ncol = k)
+  
+  for (i in 1:nrow(X_treino)) {
+    S = rep(0, nrow(X_treino))
+    for (j in 1:nrow(X_treino)) {
+      S[i] = dot(C[i, ], C[j, ])
+    }
+    
+    Yk[i, ] = k_maiores(S, Y_treino, k)
+  }
+  
+  #Determinação da função de custo
+  custo = function(theta){
+    return(t(Y_treino - (Yk %*% theta)) %*% (Y_treino - (Yk %*% theta)))
+  }
+  
+  #Determinação dos limites superior e inferior para o vetor theta
+  Lb = rep(0, k)
+  Lu = rep(1, k)
+  
+  #Chute inicial
+  theta_inicial = rnorm(k, mean = 0, sd = 1)
+  
+  #Estimação do vetor theta usando Levenberg-Marquardt
+  lm = nls.lm(par= theta_inicial, lower = Lb, upper = Lu, fn = custo)
+  theta_hat = lm$par
+  
+  #Para uma nova observação qual será a observação de
+  #treinamento mais similar pelas coordenadas
+  #Determinação da projeção da nova observação
+  #no subespaço gerado pela base ortonormal
+  aux = matrix(0, nrow = nrow(Q), ncol = ncol(Q))
+  for (j in 1:nrow(Q)){
+    aux [j, ] = dot(as.matrix(x_teste), Q[j, ]) * Q[j, ]
+  }
+  
+  proj = apply(aux, 2, sum)
+  
+  #Determinação das coordenadas
+  D = rep(0, ncol(C))
+  for (i in 1:nrow(C)) {
+    D[i] = dot(as.matrix(proj), Q[i,])
+  }
+  
+  #Determinação dos k y's mais similares
+  S = rep(0, ncol(C))
+  for (i in 1:nrow(X_treino)){
+    S[i] = dot(D, C[i,])
+  }
+  
+  similares = k_maiores(S, Y_treino, k)
+  
+  #Estimação da saída
+  y_hat = t(theta_hat) %*% similares
+  
+  return(y_hat)
+
+} 
+
+#######################################################
+#Avaliação do desempenho
+metricas = function(Y_estimado, Y_real){
+  RMSE=sqrt(mean((Y_real-Y_estimado)^2))
+  print(RMSE)
+  SSE=sum((Y_real-Y_estimado)^2)
+  SSTO=sum((Y_real-mean(Y_real))^2)
+  R_squared=1-(SSE/SSTO)
+  print(R_squared)
+}
+
+#Testando no conjunto de dados Boston
+treino_Boston = sample(nrow(Boston), 0.7*nrow(Boston))
+Boston_normalizado = apply(Boston, 2, scale)
+Boston_treino_normalizado = Boston_normalizado[treino_Boston, ]
+Boston_teste_normalizado = Boston_normalizado[-treino_Boston, ]
+medv_treino_normalizado = scale(Boston$medv[treino_Boston])
+medv_teste_normalizado = scale(Boston$medv[-treino_Boston])
+Y_estimado_Boston = rep(0, nrow(medv_teste_normalizado))
+
+for (j in 1:nrow(medv_teste_normalizado)){
+  Y_estimado_Boston[j] = RCC_Multilinear(Boston_treino_normalizado, Boston_teste_normalizado[j, ], medv_treino_normalizado, medv_teste_normalizado, 1)
+}
+
+Y_estimado_Boston = Y_estimado_Boston * sd(Boston$medv) + mean(Boston$medv)
+medv_teste = Boston$medv[-treino_Boston]
+medv_teste
+Y_estimado_Boston
+metricas(Y_estimado_Boston, medv_teste)
